@@ -1,7 +1,6 @@
 
 #include <Arduino.h>
 #include <Adafruit_TinyUSB.h> // for Serial
-#include <SoftwareSerial.h>
 
 // pin map
 #define TDO 10
@@ -9,198 +8,279 @@
 #define TCK 12
 #define TMS 13
 
-#define HALF_CLOCK_PERIOD 10
+#define CLK_DELAY 1  // this is 1/4 of clk period
 
 
-uint8_t clockJTAG(uint8_t TMS_level, uint8_t TDI_level) {
-  digitalWrite(TMS, TMS_level);
-  digitalWrite(TDI, TDI_level);
-  
-  // JTAG samples at rising edge, and changes TDO at falling edge
-  
-  digitalWrite(TCK, 1);
-  
-  delay(HALF_CLOCK_PERIOD);
-  
-  digitalWrite(TCK, 0);
-  
-  uint8_t sample = digitalRead(TDO); 
-  delay(HALF_CLOCK_PERIOD);
-
-  return sample;
-}
-
-void resetJTAG() {
-  // going to reset state
-  // no matter what state you are, if TMS stays at "1" for five clocks, a TAP controller goes back to the state "Test-Logic-Reset"
-  clockJTAG(1, 0);
-  clockJTAG(1, 0);
-  clockJTAG(1, 0);
-  clockJTAG(1, 0);
-  clockJTAG(1, 0);
-}
-
-uint32_t readJTAGWord() {
-  uint32_t val = 0;
-
-  for (int i=0; i<32; i+=1) {
-    val |= (clockJTAG(0, 0) & 0b1) << i;  // stay in shift-DR mode
-  }
-  
-  return val;
-}
+#define X      0
 
 
 
 void setup() {
-  Serial.begin(115200);
-
   pinMode(TDO, INPUT);
   pinMode(TDI, OUTPUT);
   pinMode(TCK, OUTPUT);
   pinMode(TMS, OUTPUT);
-  pinMode(9, OUTPUT);
 
-  while (!Serial) {}  // wait for Serial
+  digitalWrite(TDI, LOW);
+  digitalWrite(TCK, LOW);
+  digitalWrite(TMS, LOW);
+
+  Serial.begin(115200);
+
+  while (!Serial) {}
 
   Serial.println("ready");
 }
 
+uint32_t clockJTAG(uint8_t TMS_val, uint8_t TDI_val) {
+  uint32_t tdo_data = digitalRead(TDO);
+  digitalWrite(TMS, TMS_val);
+  digitalWrite(TDI, TDI_val);
+  delay(CLK_DELAY);
 
-void TEST_justReset() {  // just reset
-  uint8_t val = clockJTAG(1, 0);
-  Serial.println(val);
+  // TCK rising edge; target will sample TMS and TDI
+  digitalWrite(TCK, HIGH);
+  
+  delay(CLK_DELAY);
+  delay(CLK_DELAY);
+
+  // TCK falling edge; target will set TDO
+  digitalWrite(TCK, LOW);
+  
+  delay(CLK_DELAY);
+
+  return tdo_data;
 }
 
-//
-void TEST_readIDCode() {
-  resetJTAG();
-
-  // go to Shift-DR
-  clockJTAG(0, 0);
-  clockJTAG(1, 0);
-  clockJTAG(0, 0);
-//  clockJTAG(TMS_0);  
-
-  Serial.println("================");
-
-  uint32_t val = 0;
-
-  val = readJTAGWord();
-
-  Serial.print("0x");
-  Serial.print(val, HEX);
-  Serial.println("");
-  
-//  val = readID();
-//
-//  Serial.print("0x");
-//  Serial.print(val, HEX);
-//  Serial.println("");
-//  
-//  val = readID();
-//
-//  Serial.print("0x");
-//  Serial.print(val, HEX);
-//  Serial.println("");
-//  
-  
-  //delay(1000);
+void resetJTAG() {
+  clockJTAG(1, X);
+  clockJTAG(1, X);
+  clockJTAG(1, X);
+  clockJTAG(1, X);
+  clockJTAG(1, X);
 }
 
-void TEST_captureIR() {
-  
-  // going to reset state
-  // no matter what state you are, if TMS stays at "1" for five clocks, a TAP controller goes back to the state "Test-Logic-Reset"
-  resetJTAG();
-  
-  // to test idle
-  clockJTAG(0, 0);
 
+void test_readIDCODE() {
+  // assume start from idle
   // to DR scan
-  clockJTAG(1, 0);
+  clockJTAG(1, X);
 
+  // to capture DR
+  clockJTAG(0, X);
+  
+  // to shift DR
+  clockJTAG(0, X);
+
+  uint32_t id_code = 0;
+
+  for (int i=0; i<32; i+=1) {
+    id_code |= clockJTAG(0, 0) << i;
+  }
+  Serial.print(id_code, HEX); Serial.print("\t");
+
+  id_code = 0;
+  for (int i=0; i<32; i+=1) {
+    id_code |= clockJTAG(0, 0) << i;
+  }
+  Serial.print(id_code, HEX); Serial.print("\t");
+  
+  id_code = 0;
+  for (int i=0; i<32; i+=1) {
+    id_code |= clockJTAG(0, 0) << i;
+  }
+  Serial.print(id_code, HEX); Serial.print("\t");
+
+  Serial.println("");
+
+
+  // to exit 1 DR
+  clockJTAG(1, X);
+  
+  // to update DR
+  clockJTAG(1, X);
+  
+  // to idle
+  clockJTAG(0, X);
+}
+
+void test_testDRWidth() {
+  // assume start from idle
+  // to DR scan
+  clockJTAG(1, X);
+
+  // to capture DR
+  clockJTAG(0, X);
+  
+  // to shift DR
+  clockJTAG(0, X);
+
+  // write a bunch of zeros to clear out all DR
+  for (int i=0; i<200; i+=1) {
+    clockJTAG(0, 0);
+  }
+  
+  // shift in one 1
+  clockJTAG(0, 1);
+  
+  
+  uint32_t readout = 0;
+  uint32_t counter = 0;
+
+  while (!readout) {
+    readout = clockJTAG(0, 0);
+    counter += 1;
+  }
+  
+  
+  Serial.print("DR width: "); Serial.print(counter);
+
+  Serial.println("");
+
+
+  // to exit 1 DR
+  clockJTAG(1, X);
+  
+  // to update DR
+  clockJTAG(1, X);
+  
+  // to idle
+  clockJTAG(0, X);  
+}
+
+void test_testIRWidth() {
+  // assume start from idle
+  // to DR scan
+  clockJTAG(1, X);
+  
   // to IR scan
-  clockJTAG(1, 0);
+  clockJTAG(1, X);
 
   // to capture IR
-  clockJTAG(0, 0);
+  clockJTAG(0, X);
   
   // to shift IR
-  clockJTAG(0, 0);
+  clockJTAG(0, X);
 
-  // to shift IR
-  Serial.print(clockJTAG(0, 0)); Serial.print(" ");
-  Serial.print(clockJTAG(0, 0)); Serial.print(" ");
-  Serial.print(clockJTAG(0, 0)); Serial.print(" ");
-  Serial.print(clockJTAG(0, 0)); Serial.print(" ");
-  Serial.print(clockJTAG(0, 0)); Serial.print(" ");
-  Serial.print(clockJTAG(0, 0)); Serial.print(" ");
-  Serial.println();
+  // write a bunch of zeros to clear out all IR
+  for (int i=0; i<200; i+=1) {
+    clockJTAG(0, 0);
+  }
+  
+  // shift in one 1
+  clockJTAG(0, 1);
+  
+  
+  uint32_t readout = 0;
+  uint32_t counter = 0;
+
+  while (!readout) {
+    readout = clockJTAG(0, 0);
+    counter += 1;
+  }
+  
+  Serial.print("IR width: "); Serial.print(counter);
+
+  Serial.println("");
+
+
+  // to exit 1 IR
+  clockJTAG(1, X);
+  
+  // to update IR
+  clockJTAG(1, X);
+  
+  // to idle
+  clockJTAG(0, X);  
+
 }
 
 
-
-void TEST_scanDevices() {  // scan devices
-  resetJTAG();
-
-  // go to Shift-IR
-  clockJTAG(0, 0);
-  clockJTAG(1, 0);
-  clockJTAG(1, 0);
-  clockJTAG(0, 0);
-  clockJTAG(0, 0);
-
-  Serial.println("================");
-
-  int i;
+void test_BYPASS() {
+  // assume start from idle
+  // to DR scan
+  clockJTAG(1, X);
   
-  // Send plenty of ones into the IR registers
-  // That makes sure all devices are in BYPASS!
-  for(i=0; i<1000; i+=1) {
+  // to IR scan
+  clockJTAG(1, X);
+
+  // to capture IR
+  clockJTAG(0, X);
+  
+  // to shift IR
+  clockJTAG(0, X);
+
+  // write a bunch of ones to go in bypass
+  for (int i=0; i<200; i+=1) {
     clockJTAG(0, 1);
   }
   
-  clockJTAG(1, 1);  // last bit needs to have TMS active, to exit shift-IR
-
-  // we are in Exit1-IR, go to Shift-DR
-  clockJTAG(1, 0);
-  clockJTAG(1, 0);
-  clockJTAG(0, 0);
-  clockJTAG(0, 0);
-
-  // Send plenty of zeros into the DR registers to flush them
-  for(i=0; i<1000; i+=1) {
-    clockJTAG(0, 0);
-  }
-
-  // now send ones until we receive one back
-  for(i=0; i<1000; i+=1) {
-    if(clockJTAG(0, 1)) {
-      break;
-    }
-  }
-
-  int nbDevices = i;
-  Serial.print("There are ");
-  Serial.print(nbDevices);
-  Serial.print(" device(s) in the JTAG chain");
+  // to exit 1 IR
+  clockJTAG(1, X);
   
-
+  // to update IR
+  clockJTAG(1, X);
   
+  // to idle
+  clockJTAG(0, X);  
+  
+  // assume start from idle
+  // to DR scan
+  clockJTAG(1, X);
+
+  // to capture DR
+  clockJTAG(0, X);
+  
+  // to shift DR
+  clockJTAG(0, X);
+
+  // shift in a 1
+  clockJTAG(0, 1);
+
+
+  uint32_t readout;
+  
+  // do we get a 1?
+  readout = clockJTAG(0, 0);
+  Serial.print(readout); Serial.print(" ");
+  
+  // do we get a 1?
+  readout = clockJTAG(0, 0);
+  Serial.print(readout); Serial.print(" ");
+  
+  // do we get a 1?
+  readout = clockJTAG(0, 0);
+  Serial.print(readout); Serial.print(" ");
+  
+  // do we get a 1?
+  readout = clockJTAG(0, 0);
+  Serial.print(readout); Serial.print(" ");
+
   Serial.println("");
 
+  // to exit 1 DR
+  clockJTAG(1, X);
   
-  delay(1000);
+  // to update DR
+  clockJTAG(1, X);
+  
+  // to idle
+  clockJTAG(0, X);
 }
 
-
 void loop() {
-//  TEST_justReset();
+  Serial.println("================================");
+  resetJTAG();
+  // to idle state
+  clockJTAG(0, X);
 
-//  TEST_captureIR();
+  // begin test
 
-//  TEST_readIDCode();
+//  test_readIDCODE();
+
+//  test_testDRWidth();
+  test_testIRWidth();
+
+//  test_BYPASS();
   
-  TEST_scanDevices();
 }
